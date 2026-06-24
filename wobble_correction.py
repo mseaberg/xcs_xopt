@@ -24,6 +24,8 @@ t4_chi2_lut = lut['t4_chi2']
 
 
 while True:
+    # check t1_L and t4_L positions, set offsets to PVs based on lookup table
+    # update at ~1Hz (sleep or similar)
     t1_th2 = np.interp(t1_L.value, t1_L_lut, t1_th2_lut)
     t1_chi2 = np.interp(t1_L.value, t1_L_lut, t1_chi2_lut)
     t4_th2 = np.interp(t4_L.value, t4_L_lut, t4_th2_lut)
@@ -33,5 +35,3 @@ while True:
     t4_th2_offset.put(t4_th2)
     t4_chi2_offset.put(t4_chi2)
     time.sleep(.1)
-#   check t1_L and t4_L positions, set offsets to PVs based on lookup table
-#   update at ~1Hz (sleep or similar)
