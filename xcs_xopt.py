@@ -38,9 +38,11 @@ from xopt.generators.bayesian import ExpectedImprovementGenerator, UpperConfiden
 from xopt.resources.test_functions.tnk import evaluate_TNK, tnk_vocs
 import pandas as pd
 
+#### would be good to generalize this
 savepath = '/cds/home/opr/xcsopr/experiments/xcsx1015123/optimization_data/'
 
-
+#### Was messing around with trying to capture two signals in order to output a normalized signal
+#### Not currently being used although these are being initialized.
 class AvgNormSignal(AvgSignal):
     def __init__(self, signal, norm_signal, averages, duration, *, name, parent=None, **kwargs):
         super().__init__(signal, averages, duration, name=name, parent=parent, **kwargs)
@@ -80,6 +82,7 @@ class User():
     
     def __init__(self):
 
+        # various diode signals relevant to split and delay
         dd = EpicsSignalRO('XCS:SND:DIO:AMPL_12')
         t1_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_11')
         t4_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_15')
@@ -91,11 +94,15 @@ class User():
         ipm4 = EpicsSignalRO('XCS:SB1:BMMON:SUM')
         ipm5 = EpicsSignalRO('XCS:SB2:BMMON:SUM')
 
-        self.db = Broker.named('temp')
+        #### was trying to set up a separate RE from hutch-python to do scan and fit,
+        #### but will restrict this to the GUI now
+        # self.db = Broker.named('temp')
         #RE.subscribe(self.db.insert)
         self.snd = SplitAndDelay('XCS:SND', name='snd')
         self.fast_motor1 = FastMotor(name='fast_motor1')
         self.fast_motor2 = FastMotor(name='fast_motor2')
+
+        #### AvgSignals that are useful for SND alignment
         # start with 120 samples in 1 second duration for signals
         self.dd_signal = AvgSignal(dd,120,1,name='dd_signal')
         self.t1_dh_signal = AvgSignal(t1_dh,120,1,name='t1_dh_signal')
@@ -113,13 +120,15 @@ class User():
         self.ipm4_signal = AvgSignal(ipm4,120,1,name='ipm4_signal')
         self.ipm5_signal = AvgSignal(ipm5,120,1,name='ipm5_signal')
 
-        self.t1_dh_norm = AvgNormSignal(t1_dh,ipm4,120,1,name='t1_dh_norm')
-        self.dd_norm = AvgNormSignal(dd,t1_dh,120,1,name='dd_norm')
-        self.ipm5_norm = AvgNormSignal(ipm5,ipm4,120,1,name='ipm5_norm')
-        self.dcc_norm = AvgNormSignal(dcc,dci,120,1,name='dcc_norm')
-        self.t4_dh_norm = AvgNormSignal(t4_dh, dd, 120,1,name='t4_dh_norm')
-        self.dco_norm = AvgNormSignal(dco,dcc,120,1,name='dco_norm')
+        #### Not using the AvgNormSignal, that I don't think was quite working...
+        # self.t1_dh_norm = AvgNormSignal(t1_dh,ipm4,120,1,name='t1_dh_norm')
+        # self.dd_norm = AvgNormSignal(dd,t1_dh,120,1,name='dd_norm')
+        # self.ipm5_norm = AvgNormSignal(ipm5,ipm4,120,1,name='ipm5_norm')
+        # self.dcc_norm = AvgNormSignal(dcc,dci,120,1,name='dcc_norm')
+        # self.t4_dh_norm = AvgNormSignal(t4_dh, dd, 120,1,name='t4_dh_norm')
+        # self.dco_norm = AvgNormSignal(dco,dcc,120,1,name='dco_norm')
 
+        #### SnD motors
         self.snd_t1_th1 = EpicsMotor('XCS:SND:T1:TH1',name='snd_t1_th1')
         self.snd_t1_th2 = EpicsMotor('XCS:SND:T1:TH2',name='snd_t1_th2')
         self.snd_t2_th = EpicsMotor('XCS:SND:T2:TH',name='snd_t2_th')
@@ -131,12 +140,11 @@ class User():
         self.snd_t4_chi1 = EpicsMotor('XCS:SND:T4:CHI1',name='snd_t4_chi1')
         self.snd_t4_chi2 = EpicsMotor('XCS:SND:T4:CHI2',name='snd_t4_chi2')
 
-        #self.input_list = [self.snd.t1.th1,self.snd.t1.chi1,self.snd.t1.th2,
-        #        self.snd.t1.chi2,self.snd.t4.th2,self.snd.t4.chi2,
-        #        self.snd.t4.th1,self.snd.t4.chi1]
+        # start up with simulated motors
         self.input_list = [self.fast_motor1,self.fast_motor2]
         self.name_list = [motor.name for motor in self.input_list]
 
+        #### set up Xopt parameters
         self.start_pos = {}
         self.pos_range = {}
         self.motor_dict = {}
@@ -145,8 +153,7 @@ class User():
             self.pos_range[name] = 50e-6*180/np.pi
             self.motor_dict[name] = self.input_list[num]
 
-        #self.start_pos = np.zeros(len(self.input_list))
-        #self.pos_range = np.ones_like(self.start_pos)*200e-6
+
         self.vocs = None
         self.X = None
         self.generator = None
@@ -162,17 +169,26 @@ class User():
         self.n_init = 0
         self.intensity_scale = 1e-4
 
-    def set_motors(self, sim=False):
+    def set_motors(self, motion_range=50e-6, sim=False):
+        """
+        Set inputs to actual SnD motors
+        Parameters
+        ----------
+        motion_range: float
+            Xopt motion range for angular motions (radians)
+        sim: bool
+            If True, use simulated motors, otherwise use real motors
+
+        Returns
+        -------
+
+        """
         if sim:
             self.input_list = [self.fast_motor1,self.fast_motor2]
         else:
             self.input_list = [self.snd.t1.th1,self.snd.t1.chi1,self.snd.t1.th2,
                 self.snd.t1.chi2,self.snd.t4.th2,self.snd.t4.chi2,
                 self.snd.t4.th1,self.snd.t4.chi1]
-
-            #self.input_list = [self.snd.t1.th1,self.snd.t1.th2,
-            #    self.snd.t4.th2,
-            #    self.snd.t4.th1]
 
 
         self.name_list = [motor.name for motor in self.input_list]
@@ -182,7 +198,7 @@ class User():
         self.motor_dict = {}
         for num, name in enumerate(self.name_list):
             self.start_pos[name] = 0.0
-            self.pos_range[name] = 50e-6*180/np.pi
+            self.pos_range[name] = motion_range*180/np.pi
             self.motor_dict[name] = self.input_list[num]
 
 
@@ -219,15 +235,15 @@ class User():
                 turbo_controller="optimize")
         self.X = Xopt(evaluator=self.evaluator, generator=self.generator, vocs=self.vocs)
 
-    def set_vocs(self, pos_range=None,low=0,high=1):
+    def set_vocs(self, motion_range=None,low=0,high=1):
 
         for motor in self.input_list:
             self.start_pos[motor.name] = motor.wm()
 
 
-        if pos_range is not None:
+        if motion_range is not None:
             for name in self.name_list:
-                self.pos_range[name] = pos_range
+                self.pos_range[name] = motion_range
             #self.pos_range = pos_range
         else:
             for name in self.name_list:
@@ -245,15 +261,25 @@ class User():
             vocs_variables[name] = [low, high]
         self.vocs = VOCS(variables=vocs_variables, objectives={"f": "MINIMIZE"})
 
-    def eval_function_transformed(input_dict: dict) -> dict:
+    def eval_function_transformed(self, input_dict: dict) -> dict:
+        """
+        This will need to be tested. This is based on the work published with Aashwin
+        Parameters
+        ----------
+        input_dict
+
+        Returns
+        -------
+
+        """
         #keys = [f"x{i}" for i in range(1, 9)]
         keys = self.name_list
-        v = np.array(input_dict[key] for key in keys])
+        v = np.array([input_dict[key] for key in keys])
         H8 = hadamard(8)
         R = H8 / np.sqrt(8)
         out = R @ v + 0.5
         Xinp = np.expand_dims(out, axis=0)
-        data = get_snd_outputs(Xinp)
+        data = self.get_snd_outputs(Xinp)
 
         if np.isnan(data['cx']):
             bpe = np.nan
@@ -452,6 +478,8 @@ class User():
             #norm = 1
         #signal_sum /= norm
         # the following is pre-normalized
+        ### it looks like this was expecting to be divided by the normalization signal, but never happened,
+        ### so seems like an error. It may be because we were using pink beam last time. Need to revisit.
         signal_sum += self.intensity_signal.get()*self.ipm4_signal.get()/50
 
         if self.intensity_signal.get()*self.ipm4_signal.get()/50 < 1000:
@@ -551,7 +579,9 @@ class User():
         for key in self.start_pos.keys():
             self.motor_dict[key].umv(self.start_pos[key])
 
+    #### This should happen in the GUI
     def dscan_and_fit(self, signal, motor, start, stop, num, move_to_peak=False, norm_signal=None):
+
         # set up and run the scan
         curr_pos = motor.wm()
         scan_start = start + curr_pos
