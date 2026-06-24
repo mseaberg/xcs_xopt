@@ -1,5 +1,5 @@
 # load lookup table
-# this will have 6 columns
+# this will have 6 columns, TBD number of rows depending on the L motion resolution we choose
 # t1_L | t1_th2_offset | t1_chi2_offset | t4_L | t4_th2_offset | t4_chi2_offset
 
 # while True:
