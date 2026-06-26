@@ -473,6 +473,7 @@ class User():
             signal_sum += temp
         #norm = self.di_signal.get()
         norm = self.ipm4_signal.get()
+        # retry for up to 10s instead of recursing (avoids stack overflow on beam drop)
         if norm <= 1000:
             print('WARNING: ipm4 below threshold, waiting for beam...')
             for _ in range(50):
@@ -542,6 +543,7 @@ class User():
           #          X.generator.data["x8"][min_idx]
           #        ]
           X_min = self.X.generator.data.iloc[min_idx]
+          # build a dict keyed by motor name (get_snd_outputs expects .items(), not an array)
           input_dict = {name: X_min[name] for name in self.name_list}
           if move_to_optimum:
             print('moving to optimum')

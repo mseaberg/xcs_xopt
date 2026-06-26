@@ -9,6 +9,7 @@ import sys
 # load lookup table
 # this will have 6 columns, TBD number of rows depending on the L motion resolution we choose
 # t1_L | t1_th2_offset | t1_chi2_offset | t4_L | t4_th2_offset | t4_chi2_offset
+# utf-8-sig handles the byte-order mark in the CSV so column names parse correctly
 lut = pd.read_csv('wobble_lookup.csv', encoding='utf-8-sig')
 t1_L = EpicsSignalRO('XCS:SND:T1:L.RBV')
 t4_L = EpicsSignalRO('XCS:SND:T4:L.RBV')
@@ -17,6 +18,7 @@ t1_chi2_offset = epics.PV('XCS:USER:SND:T1_CHI2_OFFSET')
 t4_th2_offset = epics.PV('XCS:USER:SND:T4_TH2_OFFSET')
 t4_chi2_offset = epics.PV('XCS:USER:SND:T4_CHI2_OFFSET')
 
+# collected into a list for shutdown zeroing and startup logging
 offset_pvs = [t1_th2_offset, t1_chi2_offset, t4_th2_offset, t4_chi2_offset]
 
 t1_L_lut = lut['t1_L']
@@ -27,6 +29,7 @@ t4_th2_lut = lut['t4_th2']
 t4_chi2_lut = lut['t4_chi2']
 
 
+# zero offsets on Ctrl+C or kill so stale corrections don't persist
 def shutdown(signum, frame):
     print('\nShutting down — zeroing offsets...')
     for pv in offset_pvs:
@@ -46,9 +49,11 @@ print('  Offset PVs:', [pv.pvname for pv in offset_pvs])
 print('Running (Ctrl+C to stop)...')
 
 while True:
+    # try/except keeps the loop alive if PV disconnects
     try:
         t1_L_curr = t1_L.get()
         t4_L_curr = t4_L.get()
+        # None check: EpicsSignalRO.get() returns None if PV is disconnected
         if t1_L_curr is None or t4_L_curr is None:
             print('WARNING: got None from L readback, skipping')
             time.sleep(.1)
