@@ -474,8 +474,15 @@ class User():
         #norm = self.di_signal.get()
         norm = self.ipm4_signal.get()
         if norm <= 1000:
-            self.get_snd_outputs(inputs)
-            #norm = 1
+            print('WARNING: ipm4 below threshold, waiting for beam...')
+            for _ in range(50):
+                time.sleep(0.2)
+                norm = self.ipm4_signal.get()
+                if norm > 1000:
+                    break
+            else:
+                print('WARNING: beam did not return, returning NaN')
+                return {'intensity': np.nan, 'cx': np.nan, 'cy': np.nan, 'wx': np.nan, 'wy': np.nan}
         #signal_sum /= norm
         # the following is pre-normalized
         ### it looks like this was expecting to be divided by the normalization signal, but never happened,
@@ -535,12 +542,10 @@ class User():
           #          X.generator.data["x8"][min_idx]
           #        ]
           X_min = self.X.generator.data.iloc[min_idx]
-          inputs = np.array(X_min)
-          inputs = inputs[np.newaxis,:]
-          #outs = get_snd_outputs_detailed(inputs)
+          input_dict = {name: X_min[name] for name in self.name_list}
           if move_to_optimum:
             print('moving to optimum')
-            outs = self.get_snd_outputs(inputs)
+            outs = self.get_snd_outputs(input_dict)
           bpe = self.detailed_output['BPE']
           bpe_out = bpe[min_idx]
           intensity = self.detailed_output['Intensity']
