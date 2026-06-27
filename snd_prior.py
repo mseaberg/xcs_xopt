@@ -50,12 +50,12 @@ DEFAULT_AXIS_NAMES: List[str] = [
 ]
 
 
-def _differentiable_readout(
-    snd: SND, detector: str
+def _readout_from_branch(
+    branch, detector: str
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Read ``(intensity, cx, cy)`` from a propagated ``SND`` keeping autograd.
+    """Read ``(intensity, cx, cy)`` from a propagated delay ``branch``, keeping autograd.
 
-    ``detector`` selects the diode/screen, e.g. ``"do"`` -> ``snd.delay_branch.do``.
+    ``detector`` selects the diode/screen, e.g. ``"do"`` -> ``branch.do``.
     The centroid is the lineout-weighted mean of the detector coordinate grid,
     which is differentiable, unlike the sim's numpy ``get_<det>_cx/cy``.
 
@@ -64,7 +64,7 @@ def _differentiable_readout(
     treated as a beam-lost readout ``(0, 0, 0)``: zero intensity already makes the
     objective much worse than any beam-on point, so this is the correct penalty.
     """
-    det = getattr(snd.delay_branch, detector)
+    det = getattr(branch, detector)
     profile = det.profile
 
     if not torch.is_tensor(profile):
@@ -129,6 +129,16 @@ class SnDObjectivePriorMean(torch.nn.Module):
         super().__init__()
         self._template = snd_template
         self.axis_names = list(axis_names)
+
+        # propagate_delay only touches the delay branch and reads b1 (which
+        # propagate_beamline clones, never mutates). So per evaluation we deep-copy
+        # only the (delay_branch, moved-axes) subgraph in a SINGLE deepcopy call --
+        # the cc/bypass branches are dropped (~2/3 of the full-SND copy), and the
+        # one call keeps deepcopy's memo linking each axis to the crystals inside
+        # the copied branch. b1 is shared read-only across evaluations.
+        self._delay_template = snd_template.delay_branch
+        self._axis_templates = [getattr(snd_template, n) for n in self.axis_names]
+        self._b1 = snd_template.b1
         self.detector = detector
         self.intensity_scale = float(intensity_scale)
         self.x_target = float(x_target)
@@ -146,12 +156,18 @@ class SnDObjectivePriorMean(torch.nn.Module):
 
     def _objective_one(self, phys_row: torch.Tensor) -> torch.Tensor:
         """Evaluate ``f`` for one candidate given physical setpoints (axis order)."""
-        snd = copy.deepcopy(self._template)
-        for k, name in enumerate(self.axis_names):
-            getattr(snd, name).mv(phys_row[k])
-        snd.propagate_delay()
+        # single deepcopy of the connected subgraph so the copied axes bind to the
+        # crystals inside the copied delay branch (see __init__ for why)
+        delay, axes = copy.deepcopy((self._delay_template, self._axis_templates))
+        for k, ax in enumerate(axes):
+            ax.mv(phys_row[k])
+        # mirror SND.propagate_delay: reset detectors, then propagate b1 (shared,
+        # cloned inside propagate_beamline)
+        for device in delay.device_list:
+            device.reset()
+        delay.propagate_beamline(self._b1)
 
-        intensity, cx, cy = _differentiable_readout(snd, self.detector)
+        intensity, cx, cy = _readout_from_branch(delay, self.detector)
         bpe = torch.sqrt((cx - self.x_target) ** 2 + (cy - self.y_target) ** 2)
         return -self.intensity_scale * intensity + bpe / 350.0
 
@@ -211,13 +227,19 @@ def build_snd_sim(
 
     template = SND(energy=energy, delay=delay)
 
+    # The objective recomputes the centroid differentiably from the detector
+    # lineouts, so the numpy curve_fit analysis layer (PPM.beam_analysis) is dead
+    # weight on the propagation hot path. Disable it on every delay-branch
+    # detector; model_fn re-runs it on demand for just the one read detector below.
+    for dev in template.delay_branch.device_list:
+        if hasattr(dev, "analyze"):
+            dev.analyze = False
+
     if backend_start_pos is None:
         backend_start_pos = {
             name: float(getattr(template, name).wm()) for name in axis_names
         }
     if backend_pos_range is None:
-        import numpy as np
-
         backend_pos_range = {name: 50e-6 * 180 / np.pi for name in axis_names}
 
     def model_fn(positions: Dict[str, float]) -> Dict[str, float]:
@@ -226,10 +248,15 @@ def build_snd_sim(
             getattr(snd, name).mv(positions[name])
         snd.propagate_delay()
 
-        intensity, cx, cy = _differentiable_readout(snd, detector)
-        # widths are not on the objective path; pull from the numpy analysis layer
-        wx = getattr(snd, f"get_{detector}_wx")()
-        wy = getattr(snd, f"get_{detector}_wy")()
+        intensity, cx, cy = _readout_from_branch(snd.delay_branch, detector)
+        # widths are not on the objective path; the analysis layer is disabled on
+        # the template, so re-run beam_analysis here for just the read detector
+        # (numpy, detached) and stash the widths it returns.
+        det = getattr(snd.delay_branch, detector)
+        lx, ly = det.x_lineout, det.y_lineout
+        lx = lx.detach().cpu().numpy() if torch.is_tensor(lx) else np.asarray(lx)
+        ly = ly.detach().cpu().numpy() if torch.is_tensor(ly) else np.asarray(ly)
+        _, _, wx, wy, _, _ = det.beam_analysis(lx, ly)
         return {
             "intensity": float(intensity.detach()),
             "cx": float(cx.detach()),

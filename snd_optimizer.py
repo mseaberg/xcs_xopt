@@ -34,6 +34,7 @@ from xopt.generators.bayesian import (
     ExpectedImprovementGenerator,
     UpperConfidenceBoundGenerator,
 )
+from xopt.generators.bayesian.models.standard import StandardModelConstructor
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +170,13 @@ class SnDOptimizer:
         backend: SnDBackend,
         savepath: Optional[str] = None,
         intensity_scale: float = 1e-4,
+        prior_mean_model=None,
     ):
         self.backend = backend
         self.savepath = savepath
         self.intensity_scale = intensity_scale
+        # optional torch.nn.Module used as the GP prior mean for objective "f"
+        self.prior_mean_model = prior_mean_model
 
         self.vocs: Optional[VOCS] = None
         self.generator = None
@@ -209,6 +213,27 @@ class SnDOptimizer:
         variables = {name: [low, high] for name in self.name_list}
         self.vocs = VOCS(variables=variables, objectives={"f": "MINIMIZE"})
 
+    def set_prior_mean(self, module) -> None:
+        """Set (or clear) the GP prior-mean module for objective ``f``.
+
+        The module captures fixed quantities (``start_pos``, target, scale), so
+        rebuild and set it *after* ``set_target`` and *before* ``initialize_*``.
+        """
+        self.prior_mean_model = module
+
+    def _gp_constructor(self):
+        """Build a StandardModelConstructor wiring the frozen prior mean for ``f``.
+
+        Returns ``None`` when no prior-mean module is set, so the generator uses
+        its default model.
+        """
+        if self.prior_mean_model is None:
+            return None
+        return StandardModelConstructor(
+            mean_modules={"f": self.prior_mean_model},
+            trainable_mean_keys=[],
+        )
+
     def _reset_history(self) -> None:
         self.num = 0
         self._bpe = []
@@ -220,7 +245,13 @@ class SnDOptimizer:
         self._reset_history()
         self.set_vocs()
         self.evaluator = Evaluator(function=self.eval_function)
-        self.generator = UpperConfidenceBoundGenerator(vocs=self.vocs)
+        gp_constructor = self._gp_constructor()
+        if gp_constructor is not None:
+            self.generator = UpperConfidenceBoundGenerator(
+                vocs=self.vocs, gp_constructor=gp_constructor
+            )
+        else:
+            self.generator = UpperConfidenceBoundGenerator(vocs=self.vocs)
         self.X = Xopt(evaluator=self.evaluator, generator=self.generator)
 
     def initialize_BO_transformed(self, n_init: int = 64, scale: float = 1e-4) -> None:
@@ -238,9 +269,17 @@ class SnDOptimizer:
         self._reset_history()
         self.set_vocs()
         self.evaluator = Evaluator(function=self.eval_function)
-        self.generator = ExpectedImprovementGenerator(
-            vocs=self.vocs, turbo_controller="optimize"
-        )
+        gp_constructor = self._gp_constructor()
+        if gp_constructor is not None:
+            self.generator = ExpectedImprovementGenerator(
+                vocs=self.vocs,
+                turbo_controller="optimize",
+                gp_constructor=gp_constructor,
+            )
+        else:
+            self.generator = ExpectedImprovementGenerator(
+                vocs=self.vocs, turbo_controller="optimize"
+            )
         self.X = Xopt(evaluator=self.evaluator, generator=self.generator)
 
     # -- objective ---------------------------------------------------------
