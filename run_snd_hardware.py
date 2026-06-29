@@ -1,13 +1,7 @@
 """Standalone Xopt optimization of the XCS SnD alignment on the real hardware.
 
-This runs the *same* optimization code that hutch-python drives interactively,
-but as a plain script so you can tweak Xopt settings and rerun without paying the
-multi-minute hutch-python restart. It imports ``User`` from ``xcs_xopt`` (the
-hardware device container), connects to just the SnD EPICS devices, runs the
+It imports ``User`` from ``xcs_xopt``, connects to just the SnD EPICS devices, runs the
 chosen optimizer, and saves/plots the result.
-
-The optimization path does NOT need hutch-python's ``RE`` / databroker -- only
-``dscan_and_fit`` does, and that is not used here.
 
 Settings come from the CONSTANTS block below; any CLI flag overrides its
 constant. Booleans support a --no-<name> form (e.g. --no-prior, --no-move).
@@ -34,9 +28,9 @@ USE_PRIOR = False        # attach the differentiable-sim physics prior (real mot
 MOTION_RANGE = 50e-6     # angular search range per knob (rad)
 N_INIT = 64              # random initial samples
 NUM_ITER = 150           # optimizer steps after init
-SCALE = None             # objective intensity weight; None -> 1.0 (turbo) / 1e-4 (bo)
+SCALE = None             # objective intensity weight; None is: 1.0 (turbo) / 1e-4 (bo)
 SEED = 42                # BO initial-sample seed (turbo ignores it)
-SIM = False              # True -> simulated FastMotors (does not move real crystals)
+SIM = False              # True is simulated FastMotors (does not move real crystals)
 MOVE_TO_OPTIMUM = True   # move to the best sample when finished
 PLOT = True              # show the convergence plot at the end
 
