@@ -49,6 +49,14 @@ DEFAULT_AXIS_NAMES: List[str] = [
     "t4_th1", "t4_chi1", "t4_th2", "t4_chi2",
 ]
 
+# Detector arrays that are constant across evaluations and may be shared (not
+# copied) through the per-eval deepcopy memo. The coordinate (x, y, xx, yy) and
+# frequency (f_x, f_y) grids are never written during mv/reset/propagate/
+# calc_profile. profile is rebound to fresh zeros by reset() before any read, so
+# the template's profile object is likewise never read or mutated via the copy.
+# Sharing these avoids copying the IP PPM's 2048x2048 grids (~134 MB) every eval.
+_SHARED_CONST_ATTRS: Tuple[str, ...] = ("x", "y", "xx", "yy", "f_x", "f_y", "profile")
+
 
 def _readout_from_branch(
     branch, detector: str
@@ -139,6 +147,16 @@ class SnDObjectivePriorMean(torch.nn.Module):
         self._delay_template = snd_template.delay_branch
         self._axis_templates = [getattr(snd_template, n) for n in self.axis_names]
         self._b1 = snd_template.b1
+
+        # Constant detector arrays shared (not copied) through the per-eval
+        # deepcopy memo, gathered once from the delay template (see
+        # _SHARED_CONST_ATTRS and _objective_one).
+        self._shared_consts = []
+        for dev in self._delay_template.device_list:
+            for attr in _SHARED_CONST_ATTRS:
+                v = getattr(dev, attr, None)
+                if torch.is_tensor(v) or isinstance(v, np.ndarray):
+                    self._shared_consts.append(v)
         self.detector = detector
         self.intensity_scale = float(intensity_scale)
         self.x_target = float(x_target)
@@ -157,8 +175,12 @@ class SnDObjectivePriorMean(torch.nn.Module):
     def _objective_one(self, phys_row: torch.Tensor) -> torch.Tensor:
         """Evaluate ``f`` for one candidate given physical setpoints (axis order)."""
         # single deepcopy of the connected subgraph so the copied axes bind to the
-        # crystals inside the copied delay branch (see __init__ for why)
-        delay, axes = copy.deepcopy((self._delay_template, self._axis_templates))
+        # crystals inside the copied delay branch (see __init__ for why). Seed the
+        # memo so the constant detector grids are shared, not copied. A FRESH dict
+        # per call is required: deepcopy mutates the memo, and reusing it would
+        # alias this eval's mutable crystal/axis copies into the next eval.
+        memo = {id(v): v for v in self._shared_consts}
+        delay, axes = copy.deepcopy((self._delay_template, self._axis_templates), memo)
         for k, ax in enumerate(axes):
             ax.mv(phys_row[k])
         # mirror SND.propagate_delay: reset detectors, then propagate b1 (shared,

@@ -2,7 +2,7 @@
 Xopt-based optimization for the XCS split-and-delay (SnD) alignment.
 
 This module is intentionally free of any EPICS / hardware imports so that it can
-be tested against a simulation (e.g. the SLAC/snd-online-model) without the
+be tested against a simulation (e.g. snd-online-model) without the
 beamline control system.
 
 The optimizer talks to the environment through an :class:`SnDBackend`:
@@ -104,13 +104,13 @@ class SimulationBackend(SnDBackend):
     The simulation itself is supplied as ``model_fn``: a callable that takes a
     dict of physical positions ``{variable_name: value}`` and returns a dict
     with keys ``intensity``, ``cx``, ``cy``, ``wx``, ``wy``.  This is the single
-    integration point for the SLAC/snd-online-model -- write a small adapter
-    that calls the model and reshapes its output into that dict.
+    integration point for the simulation (write a small adapter
+    that calls the model and reshapes its output into that dict).
 
     Example
     -------
     >>> def model_fn(positions):
-    ...     out = snd_model.run(positions)        # your model call
+    ...     out = snd_model.run(positions)        # example simulation call
     ...     return {"intensity": out.flux, "cx": out.x, "cy": out.y,
     ...             "wx": out.xw, "wy": out.yw}
     >>> backend = SimulationBackend(

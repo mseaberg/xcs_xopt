@@ -57,9 +57,9 @@ class AvgNormSignal(AvgSignal):
 class HardwareBackend(SnDBackend):
     """SnDBackend that drives the real SnD motors and reads beamline signals.
 
-    The diode / centroid signals live on the :class:`User` object; the backend
-    keeps a reference to it for measurement. The normalized -> physical input
-    conversion is handled by :class:`SnDBackend.to_physical`.
+    The diode / centroid signals live on the `User` object; the backend
+    keeps a reference to it for measurement. The normalized to physical input
+    conversion is handled by `SnDBackend.to_physical`.
     """
 
     def __init__(self, user, input_list, motion_range=50e-6):
