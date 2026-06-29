@@ -218,6 +218,9 @@ class User():
             self, [self.fast_motor1, self.fast_motor2], motion_range=50e-6
         )
         self.optimizer = SnDOptimizer(self.backend, savepath=savepath)
+        # sim-axis names matching the real-motor order in set_motors; only set
+        # when real motors are selected, and used to build the matching prior.
+        self._sim_axis_names = None
 
     def set_motors(self, motion_range=50e-6, sim=False):
         """
@@ -232,10 +235,19 @@ class User():
         """
         if sim:
             input_list = [self.fast_motor1, self.fast_motor2]
+            self._sim_axis_names = None
         else:
+            # The real SnD motors, paired position-for-position with the
+            # differentiable-sim axis names below. The prior is positional: the
+            # i-th optimizer variable must be the i-th sim axis, so these two
+            # lists MUST stay in the same order. Note the t4 th/chi ordering
+            # differs from snd_prior.DEFAULT_AXIS_NAMES, which is why we hand the
+            # prior an explicit axis_names list instead of relying on that default.
             input_list = [self.snd.t1.th1, self.snd.t1.chi1, self.snd.t1.th2,
                 self.snd.t1.chi2, self.snd.t4.th2, self.snd.t4.chi2,
                 self.snd.t4.th1, self.snd.t4.chi1]
+            self._sim_axis_names = ["t1_th1", "t1_chi1", "t1_th2", "t1_chi2",
+                "t4_th2", "t4_chi2", "t4_th1", "t4_chi1"]
 
         self.backend = HardwareBackend(self, input_list, motion_range=motion_range)
         self.optimizer = SnDOptimizer(self.backend, savepath=savepath)
@@ -272,6 +284,46 @@ class User():
 
     def move_to_start(self):
         self.optimizer.move_to_start()
+
+    def enable_prior(self, intensity_scale=1e-4, energy=9500.0,
+                     delay=280e-3, detector="do"):
+        """Attach the differentiable-sim physics prior to the GP for objective "f".
+
+        Must be called AFTER ``set_target`` (the prior captures the centroid
+        target) and BEFORE ``initialize_turbo`` / ``initialize_BO`` (the prior is
+        wired in when the generator's model is built). Real SnD motors only.
+
+        ``intensity_scale`` must match the ``scale`` passed to ``initialize_*`` so
+        the prior and the measured objective live on the same scale.
+        """
+        if self._sim_axis_names is None:
+            raise RuntimeError(
+                "enable_prior requires the real SnD motors; "
+                "call set_motors(sim=False) first"
+            )
+        # Imported lazily: snd_prior pulls in torch + the differentiable sim,
+        # which need not be installed for plain hardware runs without a prior.
+        from snd_prior import build_snd_sim
+
+        # Match the prior's normalized->physical range to the backend's. start_pos
+        # is left to default to the sim's own aligned baseline (NOT the hardware
+        # encoder positions): both map normalized 0.5 -> aligned, so the relative
+        # search space is shared even though the absolute references differ.
+        range_val = next(iter(self.backend.pos_range.values()))
+        backend_pos_range = {name: range_val for name in self._sim_axis_names}
+
+        _, prior = build_snd_sim(
+            axis_names=self._sim_axis_names,
+            backend_pos_range=backend_pos_range,
+            backend_start_pos=None,
+            energy=energy,
+            delay=delay,
+            detector=detector,
+            x_target=self.optimizer.x_target,
+            y_target=self.optimizer.y_target,
+            intensity_scale=intensity_scale,
+        )
+        self.optimizer.set_prior_mean(prior)
 
     #### This should happen in the GUI
     def dscan_and_fit(self, signal, motor, start, stop, num, move_to_peak=False, norm_signal=None):
