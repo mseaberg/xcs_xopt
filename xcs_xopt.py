@@ -285,8 +285,8 @@ class User():
     def move_to_start(self):
         self.optimizer.move_to_start()
 
-    def enable_prior(self, intensity_scale=1e-4, energy=9500.0,
-                     delay=280e-3, detector="do"):
+    def enable_prior(self, intensity_scale=1e-4, energy=None,
+                     delay=None, detector="do"):
         """Attach the differentiable-sim physics prior to the GP for objective "f".
 
         Must be called AFTER ``set_target`` (the prior captures the centroid
@@ -295,20 +295,64 @@ class User():
 
         ``intensity_scale`` must match the ``scale`` passed to ``initialize_*`` so
         the prior and the measured objective live on the same scale.
+
+        ``energy`` / ``delay`` default to the live machine setpoints read from
+        ``XCS:SND:CALC:E1`` / ``XCS:SND:CALC:Delay`` (both identity-scaled in
+        ``pv_mapping.json``); pass explicit values to override. We may later
+        switch energy to ``T1:TTH.RBV + T1_TTH_OFFSET`` like the online model.
         """
         if self._sim_axis_names is None:
             raise RuntimeError(
                 "enable_prior requires the real SnD motors; "
                 "call set_motors(sim=False) first"
             )
+
+        # Build the prior at the live operating point rather than a hardcoded
+        # one, so its physics matches the machine. unit_conversion for both is
+        # identity, so the raw PV value feeds the sim directly.
+        if energy is None or delay is None:
+            e1 = EpicsSignalRO('XCS:SND:CALC:E1', name='snd_e1')
+            dly = EpicsSignalRO('XCS:SND:CALC:Delay', name='snd_delay')
+            e1.wait_for_connection()
+            dly.wait_for_connection()
+            if energy is None:
+                energy = float(e1.get())
+            if delay is None:
+                delay = float(dly.get())
+
         # Imported lazily: snd_prior pulls in torch + the differentiable sim,
         # which need not be installed for plain hardware runs without a prior.
+        import json
+        import os
+
         from snd_prior import build_snd_sim
 
-        # Match the prior's normalized->physical range to the backend's. start_pos
-        # is left to default to the sim's own aligned baseline (NOT the hardware
-        # encoder positions): both map normalized 0.5 -> aligned, so the relative
-        # search space is shared even though the absolute references differ.
+        # The differentiable sim's axes work in its native units (rad for the
+        # angle knobs, m for centroids) while the backend drives the EPICS motors
+        # and reads centroids in PV units. pv_mapping.json holds the per-PV
+        # PV->sim factors; feed them to the prior so it consumes hardware-unit
+        # setpoints and emits hardware-unit centroids (mirrors snd_model.py's
+        # input_transform / output_transform).
+        mapping_path = os.path.join(os.path.dirname(__file__), "pv_mapping.json")
+        with open(mapping_path) as f:
+            unit_conversion = json.load(f)["unit_conversion"]
+        axis_conversion = {
+            name: unit_conversion[name] for name in self._sim_axis_names
+        }
+        # The measured centroids (cx_signal / cy_signal, read in measure()) are
+        # the IP centroids in microns; the prior emits sim centroids in meters
+        # and divides by these to reach the same PV units, so this is um->m.
+        # TODO: the centroid source is moving to XCS:USER:SND:X_CENTROID_SHMEM /
+        # Y_CENTROID_SHMEM (also microns) -- update the PVs in User.__init__ when
+        # those go live; this factor stays 1e-6.
+        cx_conversion = 1e-6
+        cy_conversion = 1e-6
+
+        # Match the prior's normalized->physical range to the backend's (PV units;
+        # the prior scales it to sim units via unit_conversion). start_pos is left
+        # to default to the sim's own aligned baseline (NOT the hardware encoder
+        # positions): both map normalized 0.5 -> aligned, so the relative search
+        # space is shared even though the absolute references differ.
         range_val = next(iter(self.backend.pos_range.values()))
         backend_pos_range = {name: range_val for name in self._sim_axis_names}
 
@@ -322,6 +366,9 @@ class User():
             x_target=self.optimizer.x_target,
             y_target=self.optimizer.y_target,
             intensity_scale=intensity_scale,
+            unit_conversion=axis_conversion,
+            cx_conversion=cx_conversion,
+            cy_conversion=cy_conversion,
         )
         self.optimizer.set_prior_mean(prior)
 

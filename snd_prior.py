@@ -111,10 +111,23 @@ class SnDObjectivePriorMean(torch.nn.Module):
         SND attribute names, in the same order as the optimizer's
         ``variable_names`` (one per knob).
     pos_range, start_pos:
-        Physical motion range and center per axis -- **must match the evaluator
-        backend** so the prior and the data live in the same normalized space.
-        The normalized -> physical map mirrors ``SnDBackend.to_physical``:
-        ``phys = x * pos_range - pos_range / 2 + start_pos``.
+        Physical motion range and center per axis, in the same (hardware / PV)
+        units as the evaluator backend so the prior and the data live in the
+        same normalized space. The normalized -> physical map mirrors
+        ``SnDBackend.to_physical``: ``phys = x * pos_range - pos_range / 2 +
+        start_pos``. Those physical setpoints are then scaled into the
+        simulator's native units by ``unit_conversion`` before being applied to
+        the sim axes (see ``input_transform``).
+    unit_conversion:
+        Per-axis PV -> simulation factor (``sim = pv * unit_conversion``), keyed
+        by ``axis_names``; from ``pv_mapping.json``. Defaults to ``1.0`` for any
+        missing axis, i.e. no scaling (identity), which is the right behavior for
+        a sim-only run where the data and the prior already share sim units.
+    cx_conversion, cy_conversion:
+        Centroid PV -> simulation factors for the read detector
+        (``sim_m = pv_mm * conversion``). The sim returns centroids in meters; we
+        divide by these to express the beam-position error in the same PV units
+        as ``x_target`` / ``y_target`` and the measured objective. Default ``1.0``.
     x_target, y_target:
         Centroid target used by the beam-position-error term.
     intensity_scale:
@@ -129,6 +142,9 @@ class SnDObjectivePriorMean(torch.nn.Module):
         axis_names: Sequence[str],
         pos_range: Dict[str, float],
         start_pos: Dict[str, float],
+        unit_conversion: Optional[Dict[str, float]] = None,
+        cx_conversion: float = 1.0,
+        cy_conversion: float = 1.0,
         x_target: float = 0.0,
         y_target: float = 0.0,
         intensity_scale: float = 1e-4,
@@ -137,6 +153,8 @@ class SnDObjectivePriorMean(torch.nn.Module):
         super().__init__()
         self._template = snd_template
         self.axis_names = list(axis_names)
+        self.cx_conversion = float(cx_conversion)
+        self.cy_conversion = float(cy_conversion)
 
         # propagate_delay only touches the delay branch and reads b1 (which
         # propagate_beamline clones, never mutates). So per evaluation we deep-copy
@@ -171,9 +189,24 @@ class SnDObjectivePriorMean(torch.nn.Module):
             "start_pos_vec",
             torch.tensor([start_pos[n] for n in self.axis_names], dtype=DTYPE),
         )
+        # per-axis PV -> simulation input scaling (identity if not supplied)
+        unit_conversion = unit_conversion or {}
+        self.register_buffer(
+            "input_scale_vec",
+            torch.tensor(
+                [float(unit_conversion.get(n, 1.0)) for n in self.axis_names],
+                dtype=DTYPE,
+            ),
+        )
 
     def _objective_one(self, phys_row: torch.Tensor) -> torch.Tensor:
-        """Evaluate ``f`` for one candidate given physical setpoints (axis order)."""
+        """Evaluate ``f`` for one candidate given physical setpoints (axis order).
+
+        ``phys_row`` is in PV / hardware units; it is scaled into the simulator's
+        native units (``input_transform``) before driving the axes, and the
+        resulting centroids are scaled back to PV units (``output_transform``)
+        so the beam-position error matches the measured objective and target.
+        """
         # single deepcopy of the connected subgraph so the copied axes bind to the
         # crystals inside the copied delay branch (see __init__ for why). Seed the
         # memo so the constant detector grids are shared, not copied. A FRESH dict
@@ -181,8 +214,9 @@ class SnDObjectivePriorMean(torch.nn.Module):
         # alias this eval's mutable crystal/axis copies into the next eval.
         memo = {id(v): v for v in self._shared_consts}
         delay, axes = copy.deepcopy((self._delay_template, self._axis_templates), memo)
+        sim_row = phys_row * self.input_scale_vec
         for k, ax in enumerate(axes):
-            ax.mv(phys_row[k])
+            ax.mv(sim_row[k])
         # mirror SND.propagate_delay: reset detectors, then propagate b1 (shared,
         # cloned inside propagate_beamline)
         for device in delay.device_list:
@@ -190,6 +224,8 @@ class SnDObjectivePriorMean(torch.nn.Module):
         delay.propagate_beamline(self._b1)
 
         intensity, cx, cy = _readout_from_branch(delay, self.detector)
+        cx = cx / self.cx_conversion
+        cy = cy / self.cy_conversion
         bpe = torch.sqrt((cx - self.x_target) ** 2 + (cy - self.y_target) ** 2)
         return -self.intensity_scale * intensity + bpe / 350.0
 
@@ -223,6 +259,9 @@ def build_snd_sim(
     x_target: float = 0.0,
     y_target: float = 0.0,
     intensity_scale: float = 1e-4,
+    unit_conversion: Optional[Dict[str, float]] = None,
+    cx_conversion: float = 1.0,
+    cy_conversion: float = 1.0,
 ) -> Tuple[Callable[[Dict[str, float]], Dict[str, float]], SnDObjectivePriorMean]:
     """Build a sim-backed evaluator callable and a matching prior-mean module.
 
@@ -231,9 +270,15 @@ def build_snd_sim(
     *identical* simulator.
 
     ``backend_pos_range`` / ``backend_start_pos`` should be the same dicts the
-    :class:`snd_optimizer.SimulationBackend` uses, keyed by ``axis_names``.  If
+    backend uses (in its PV / hardware units), keyed by ``axis_names``.  If
     omitted, they default to the aligned baseline (``wm()``) with the standard
     ``50e-6 rad`` angular range, matching the hardware backend convention.
+
+    ``unit_conversion`` (per-axis PV -> sim factor) and ``cx_conversion`` /
+    ``cy_conversion`` (centroid PV -> sim factor for the read detector) come from
+    ``pv_mapping.json`` and let the prior consume hardware-unit setpoints and
+    emit hardware-unit centroids. They default to identity (``1.0``), the correct
+    choice for a sim-only run where data and prior already share sim units.
 
     Returns
     -------
@@ -257,9 +302,14 @@ def build_snd_sim(
         if hasattr(dev, "analyze"):
             dev.analyze = False
 
+    unit_conversion = unit_conversion or {}
     if backend_start_pos is None:
+        # The sim's aligned baseline (wm(), in sim units) expressed in PV units,
+        # so normalized 0.5 maps to the aligned crystal positions. input_transform
+        # in the prior scales it straight back to sim units before any motor move.
         backend_start_pos = {
-            name: float(getattr(template, name).wm()) for name in axis_names
+            name: float(getattr(template, name).wm()) / unit_conversion.get(name, 1.0)
+            for name in axis_names
         }
     if backend_pos_range is None:
         backend_pos_range = {name: 50e-6 * 180 / np.pi for name in axis_names}
@@ -292,6 +342,9 @@ def build_snd_sim(
         axis_names,
         backend_pos_range,
         backend_start_pos,
+        unit_conversion=unit_conversion,
+        cx_conversion=cx_conversion,
+        cy_conversion=cy_conversion,
         x_target=x_target,
         y_target=y_target,
         intensity_scale=intensity_scale,
