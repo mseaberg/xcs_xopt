@@ -212,6 +212,20 @@ class SnDOptimizer:
         self.backend.refresh_start_pos()
         variables = {name: [low, high] for name in self.name_list}
         self.vocs = VOCS(variables=variables, objectives={"f": "MINIMIZE"})
+        # The prior mean indexes input columns by position, and the GP feeds
+        # columns in vocs.variable_names order. That order MUST equal the
+        # backend's variable order (which is paired position-for-position with
+        # the sim axis names in User.set_motors). It holds today because VOCS
+        # preserves insertion order; if a VOCS implementation ever sorts, this
+        # fails loudly instead of silently permuting the physics prior against
+        # the motors.
+        if list(self.vocs.variable_names) != list(self.name_list):
+            raise RuntimeError(
+                "VOCS reordered the variables: "
+                f"{list(self.vocs.variable_names)} != {list(self.name_list)}. "
+                "The prior-mean column mapping is positional and would be "
+                "scrambled; refusing to build a mis-mapped optimizer."
+            )
 
     def set_prior_mean(self, module) -> None:
         """Set (or clear) the GP prior-mean module for objective ``f``.
