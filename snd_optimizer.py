@@ -315,6 +315,7 @@ class SnDOptimizer:
         print("Intensity: {}".format(data["intensity"]))
 
         result = -self.intensity_scale * data["intensity"] + bpe / 350
+        print("Score: {}".format(result))
         return {"f": result}
 
     def eval_function(self, input_dict: Dict[str, float]) -> Dict[str, float]:
@@ -361,7 +362,7 @@ class SnDOptimizer:
         for i in range(num_iter):
             print(i)
             self.X.step()
-            self.X.generator.beta += 0.2
+            #self.X.generator.beta += 0.2
             print("beta={}".format(self.X.generator.beta))
 
         return self.X.data
@@ -390,7 +391,7 @@ class SnDOptimizer:
         """Find the best sample, optionally move to it, and save/plot results."""
         data = self.X.generator.data
 
-        min_idx = int(np.argmin(data["f"].to_numpy()))
+        min_idx = int(np.nanargmin(data["f"].to_numpy()))
         X_min = data.iloc[min_idx]
 
         if move_to_optimum:

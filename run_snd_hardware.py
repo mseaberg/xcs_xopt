@@ -33,6 +33,7 @@ SEED = 42                # BO initial-sample seed (turbo ignores it)
 SIM = False              # True is simulated FastMotors (does not move real crystals)
 MOVE_TO_OPTIMUM = True   # move to the best sample when finished
 PLOT = True              # show the convergence plot at the end
+ONLINE_MODEL = False     # True means use the online model as Xopt measurement
 
 
 def main(args):
@@ -48,7 +49,7 @@ def main(args):
         f"num_iter={args.num_iter} | scale={scale}"
     )
 
-    user = User()
+    user = User(model=args.online_model)
     user.set_motors(motion_range=args.motion_range, sim=args.sim)
     user.set_target()
     print(
@@ -85,6 +86,7 @@ def parse_args():
                    help="drive simulated FastMotors instead of the real crystals")
     p.add_argument("--motion-range", type=float, default=MOTION_RANGE,
                    help="angular search range per knob (rad)")
+    p.add_argument("--online-model", action=argparse.BooleanOptionalAction, default=ONLINE_MODEL)
     p.add_argument("--n-init", type=int, default=N_INIT)
     p.add_argument("--num-iter", type=int, default=NUM_ITER)
     p.add_argument("--scale", type=float, default=SCALE,

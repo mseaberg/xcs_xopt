@@ -77,7 +77,7 @@ class HardwareBackend(SnDBackend):
 
     def measure(self, positions):
         user = self.user
-        intensity_list = [user.do_signal]
+        intensity_list = [user.t1_dh_signal, user.dd_signal, user.t4_dh_signal, user.do_signal]
         centroid_list = [user.cx_signal, user.cy_signal, user.wx_signal, user.wy_signal]
         signal_list = intensity_list + centroid_list
 
@@ -85,6 +85,7 @@ class HardwareBackend(SnDBackend):
         status_list = []
         for key, value in positions.items():
             time.sleep(.1)
+            print('moving {} to {}'.format(self.motor_dict[key].name,value))
             status = self.motor_dict[key].move(value)
             status_list.append(status)
         done_moving = False
@@ -118,7 +119,8 @@ class HardwareBackend(SnDBackend):
         # the following is pre-normalized
         ### it looks like this was expecting to be divided by the normalization signal, but never happened,
         ### so seems like an error. It may be because we were using pink beam last time. Need to revisit.
-        signal_sum += user.intensity_signal.get() * user.ipm4_signal.get() / 50
+        #signal_sum += user.intensity_signal.get() * user.ipm4_signal.get() / 50
+        signal_sum += user.intensity_signal.get()
 
         if user.intensity_signal.get() * user.ipm4_signal.get() / 50 < 1000:
             cx = np.nan
@@ -130,6 +132,12 @@ class HardwareBackend(SnDBackend):
             cy = np.nanmean(user.cy_signal.values)
             wx = np.nanmean(user.wx_signal.values)
             wy = np.nanmean(user.wy_signal.values)
+
+        if self.user.model:
+            cx *= 1e3
+            cy *= 1e3
+            wx *= 1e3
+            wy *= 1e3
 
         return {
             'intensity': signal_sum,
@@ -155,7 +163,10 @@ class HardwareBackend(SnDBackend):
             time.sleep(0.1)
             done_reading = all([status.done for status in status_list])
 
-        return user.cx_signal.get(), user.cy_signal.get()
+        if self.user.model:
+            return 0, 0
+        else:
+            return user.cx_signal.get(), user.cy_signal.get()
 
     def move_to_start(self):
         for key in self.start_pos.keys():
@@ -165,19 +176,47 @@ class HardwareBackend(SnDBackend):
 class User():
 
 
-    def __init__(self):
+    def __init__(self, model=False):
 
+
+        self.model = model
         # various diode signals relevant to split and delay
-        dd = EpicsSignalRO('XCS:SND:DIO:AMPL_12')
-        t1_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_11')
-        t4_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_15')
-        do = EpicsSignalRO('XCS:SND:DIO:AMPL_14')
-        di = EpicsSignalRO('XCS:SND:DIO:AMPL_10')
-        dci = EpicsSignalRO('XCS:SND:DIO:AMPL_13')
-        dcc = EpicsSignalRO('XCS:SND:DIO:AMPL_8')
-        dco = EpicsSignalRO('XCS:SND:DIO:AMPL_9')
-        ipm4 = EpicsSignalRO('XCS:SB1:BMMON:SUM')
-        ipm5 = EpicsSignalRO('XCS:SB2:BMMON:SUM')
+        if model:
+            duration = 2
+            nShots = 1
+            dd = EpicsSignalRO('XCS:USER:SND:DD_SUM_LUME')
+            t1_dh = EpicsSignalRO('XCS:USER:SND:T1_DH_SUM_LUME')
+            t4_dh = EpicsSignalRO('XCS:USER:SND:T4_DH_SUM_LUME')
+            do = EpicsSignalRO('XCS:USER:SND:DO_SUM_LUME')
+            di = EpicsSignalRO('XCS:USER:SND:DI_SUM_LUME')
+            dci = EpicsSignalRO('XCS:USER:SND:DCI_SUM_LUME')
+            dcc = EpicsSignalRO('XCS:USER:SND:DCC_SUM_LUME')
+            dco = EpicsSignalRO('XCS:USER:SND:DCO_SUM_LUME')
+            ipm4 = EpicsSignalRO('XCS:USER:SND:DI_SUM_LUME')
+            ipm5 = EpicsSignalRO('XCS:USER:SND:DO_SUM_LUME')
+            cx = EpicsSignalRO('XCS:USER:SND:IP_X_CENTROID_LUME')
+            cy = EpicsSignalRO('XCS:USER:SND:IP_Y_CENTROID_LUME')
+            wx = EpicsSignalRO('XCS:USER:SND:IP_X_WIDTH_LUME')
+            wy = EpicsSignalRO('XCS:USER:SND:IP_Y_WIDTH_LUME')
+            intensity = EpicsSignalRO('XCS:USER:SND:IP_SUM_LUME')
+        else:
+            duration = 1
+            nShots = 120
+            dd = EpicsSignalRO('XCS:SND:DIO:AMPL_12')
+            t1_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_11')
+            t4_dh = EpicsSignalRO('XCS:SND:DIO:AMPL_15')
+            do = EpicsSignalRO('XCS:SND:DIO:AMPL_14')
+            di = EpicsSignalRO('XCS:SND:DIO:AMPL_10')
+            dci = EpicsSignalRO('XCS:SND:DIO:AMPL_13')
+            dcc = EpicsSignalRO('XCS:SND:DIO:AMPL_8')
+            dco = EpicsSignalRO('XCS:SND:DIO:AMPL_9')
+            ipm4 = EpicsSignalRO('XCS:SB1:BMMON:SUM')
+            ipm5 = EpicsSignalRO('XCS:SB2:BMMON:SUM')
+            cx = EpicsSignalRO('XCS:USER:SND:X_CENTROID')
+            cy = EpicsSignalRO('XCS:USER:SND:Y_CENTROID')
+            wx = EpicsSignalRO('XCS:USER:SND:X_WIDTH')
+            wy = EpicsSignalRO('XCS:USER:SND:Y_WIDTH')
+            intensity = EpicsSignalRO('XCS:USER:SND:INTENSITY')
 
         self.snd = SplitAndDelay('XCS:SND', name='snd')
         self.fast_motor1 = FastMotor(name='fast_motor1')
@@ -185,21 +224,21 @@ class User():
 
         #### AvgSignals that are useful for SND alignment
         # start with 120 samples in 1 second duration for signals
-        self.dd_signal = AvgSignal(dd,120,1,name='dd_signal')
-        self.t1_dh_signal = AvgSignal(t1_dh,120,1,name='t1_dh_signal')
-        self.t4_dh_signal = AvgSignal(t4_dh,120,1,name='t4_dh_signal')
-        self.do_signal = AvgSignal(do,120,1,name='do_signal')
-        self.di_signal = AvgSignal(di,120,1,name='di_signal')
-        self.dci_signal = AvgSignal(dci,120,1,name='dci_signal')
-        self.dcc_signal = AvgSignal(dcc,120,1,name='dcc_signal')
-        self.dco_signal = AvgSignal(dco,120,1,name='dco_signal')
-        self.cx_signal = AvgSignal(EpicsSignalRO('XCS:USER:SND:X_CENTROID'),120,1,name='cx_signal')
-        self.cy_signal = AvgSignal(EpicsSignalRO('XCS:USER:SND:Y_CENTROID'),120,1,name='cy_signal')
-        self.wx_signal = AvgSignal(EpicsSignalRO('XCS:USER:SND:X_WIDTH'),120,1,name='wx_signal')
-        self.wy_signal = AvgSignal(EpicsSignalRO('XCS:USER:SND:Y_WIDTH'),120,1,name='wy_signal')
-        self.intensity_signal = AvgSignal(EpicsSignalRO('XCS:USER:SND:INTENSITY'),120,1,name='intensity_signal')
-        self.ipm4_signal = AvgSignal(ipm4,120,1,name='ipm4_signal')
-        self.ipm5_signal = AvgSignal(ipm5,120,1,name='ipm5_signal')
+        self.dd_signal = AvgSignal(dd,nShots,duration,name='dd_signal')
+        self.t1_dh_signal = AvgSignal(t1_dh,nShots,duration,name='t1_dh_signal')
+        self.t4_dh_signal = AvgSignal(t4_dh,nShots,duration,name='t4_dh_signal')
+        self.do_signal = AvgSignal(do,nShots,duration,name='do_signal')
+        self.di_signal = AvgSignal(di,nShots,duration,name='di_signal')
+        self.dci_signal = AvgSignal(dci,nShots,duration,name='dci_signal')
+        self.dcc_signal = AvgSignal(dcc,nShots,duration,name='dcc_signal')
+        self.dco_signal = AvgSignal(dco,nShots,duration,name='dco_signal')
+        self.cx_signal = AvgSignal(cx,nShots,duration,name='cx_signal')
+        self.cy_signal = AvgSignal(cy,nShots,duration,name='cy_signal')
+        self.wx_signal = AvgSignal(wx,nShots,duration,name='wx_signal')
+        self.wy_signal = AvgSignal(wy,nShots,duration,name='wy_signal')
+        self.intensity_signal = AvgSignal(intensity,nShots,duration,name='intensity_signal')
+        self.ipm4_signal = AvgSignal(ipm4,nShots,duration,name='ipm4_signal')
+        self.ipm5_signal = AvgSignal(ipm5,nShots,duration,name='ipm5_signal')
 
         #### SnD motors
         self.snd_t1_th1 = EpicsMotor('XCS:SND:T1:TH1',name='snd_t1_th1')
